@@ -102,6 +102,15 @@ for f in state.json context.md handoff.md tasks.md; do
 done
 
 # ─── Auth Setup: Auto-inject token + disable device auth ────────────────────
+# NOTE: When all three Privy env vars are set (PRIVY_APP_ID, PRIVY_VERIFICATION_KEY,
+# OPENCLAW_OWNER_PRIVY_ID), the auth proxy handles authentication via trusted-proxy mode.
+# Token auth is skipped in that case to avoid OpenClaw's mixed token/trusted-proxy rejection.
+# The actual trusted-proxy config is injected later, just before starting the auth proxy.
+
+PRIVY_AUTH_CONFIGURED=false
+if [ -n "${PRIVY_APP_ID:-}" ] && [ -n "${PRIVY_VERIFICATION_KEY:-}" ] && [ -n "${OPENCLAW_OWNER_PRIVY_ID:-}" ]; then
+  PRIVY_AUTH_CONFIGURED=true
+fi
 
 # Validate config is valid JSON before modifying
 if ! jq . "$CONFIG_FILE" > /dev/null 2>&1; then
@@ -109,6 +118,12 @@ if ! jq . "$CONFIG_FILE" > /dev/null 2>&1; then
   echo "   Fix $CONFIG_FILE manually or delete it to regenerate on next start"
   AUTH_TOKEN=""
   TOKEN_SOURCE="none (malformed config)"
+elif [ "$PRIVY_AUTH_CONFIGURED" = "true" ]; then
+  # Privy auth proxy mode — skip token auth entirely
+  # trusted-proxy mode config will be injected before starting the auth proxy
+  AUTH_TOKEN=""
+  TOKEN_SOURCE="privy-auth-proxy (no token needed)"
+  echo "🔒 Privy auth detected — skipping token auth (trusted-proxy mode)"
 else
 
   # Determine auth token: env var > existing config > auto-generate
@@ -468,9 +483,15 @@ fi
 # ─── Start Morpheus Proxy (background, only if configured) ──────────────────
 
 # Trap signals to clean up all children on exit
+AUTH_PROXY_PID=""
 cleanup() {
   echo ""
   echo "🛑 Shutting down..."
+  if [ -n "${AUTH_PROXY_PID:-}" ]; then
+    kill "$AUTH_PROXY_PID" 2>/dev/null || true
+    wait "$AUTH_PROXY_PID" 2>/dev/null || true
+    echo "   Auth proxy stopped"
+  fi
   if [ -n "${GATEWAY_PID:-}" ]; then
     kill "$GATEWAY_PID" 2>/dev/null || true
     wait "$GATEWAY_PID" 2>/dev/null || true
@@ -502,21 +523,118 @@ else
   PROXY_PID=""
 fi
 
+# ─── Auth Proxy Mode (Privy JWT) ─────────────────────────────────────────────
+# When PRIVY_APP_ID is set, the auth proxy handles external access on :18789
+# and OpenClaw runs on :18790 (internal, localhost only) in trusted-proxy mode.
+# When PRIVY_APP_ID is NOT set, OpenClaw runs directly on :18789 (legacy mode).
+
+AUTH_PROXY_ENABLED=false
+GATEWAY_PORT=18789
+
+if [ -n "${PRIVY_APP_ID:-}" ] && [ -n "${PRIVY_VERIFICATION_KEY:-}" ] && [ -n "${OPENCLAW_OWNER_PRIVY_ID:-}" ]; then
+  AUTH_PROXY_ENABLED=true
+  GATEWAY_PORT=18790
+  export OPENCLAW_INTERNAL_PORT=18790
+
+  echo ""
+  echo "🔒 Auth proxy mode enabled (Privy JWT)"
+  echo "   External: Auth Proxy :18789 → OpenClaw :18790 (internal)"
+  echo ""
+
+  # Configure OpenClaw for trusted-proxy mode
+  # The auth proxy injects x-forwarded-user after verifying the Privy JWT
+  if jq . "$CONFIG_FILE" > /dev/null 2>&1; then
+    TMP_CONFIG=$(mktemp)
+    if jq '
+      .gateway.port = 18790 |
+      .gateway.bind = "loopback" |
+      .gateway.auth.mode = "trusted-proxy" |
+      .gateway.auth.trustedProxy.userHeader = "x-forwarded-user" |
+      .gateway.auth.trustedProxy.allowLoopback = true |
+      .gateway.trustedProxies = ["127.0.0.1"] |
+      .gateway.controlUi.enabled = true |
+      .gateway.controlUi.dangerouslyDisableDeviceAuth = true |
+      .gateway.controlUi.allowInsecureAuth = true |
+      .gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true |
+      # Remove token auth fields that conflict with trusted-proxy mode
+      del(.gateway.auth.token)
+    ' "$CONFIG_FILE" > "$TMP_CONFIG" 2>/dev/null; then
+      mv "$TMP_CONFIG" "$CONFIG_FILE"
+      echo "🔧 OpenClaw configured for trusted-proxy mode (port 18790, loopback only)"
+    else
+      rm -f "$TMP_CONFIG"
+      echo "⚠️  Failed to configure trusted-proxy mode — auth proxy may not work"
+    fi
+  fi
+
+  # Start the auth proxy
+  AUTH_PROXY_SCRIPT="/opt/everclaw/auth-proxy/server.mjs"
+  if [ -f "$AUTH_PROXY_SCRIPT" ]; then
+    echo "🚀 Starting auth proxy on :18789..."
+    node "$AUTH_PROXY_SCRIPT" &
+    AUTH_PROXY_PID=$!
+
+    # Health gate: wait for auth proxy to become ready before starting gateway
+    # This ensures the gateway is never exposed without authentication
+    echo "⏳ Waiting for auth proxy to become ready..."
+    AUTH_PROXY_READY=false
+    AUTH_PROXY_WAIT=0
+    while [ $AUTH_PROXY_WAIT -lt 15 ]; do
+      if curl -sf http://127.0.0.1:18789/health > /dev/null 2>&1; then
+        AUTH_PROXY_READY=true
+        break
+      fi
+      if ! kill -0 "$AUTH_PROXY_PID" 2>/dev/null; then
+        echo "❌ Auth proxy exited during startup"
+        break
+      fi
+      AUTH_PROXY_WAIT=$((AUTH_PROXY_WAIT + 1))
+      sleep 1
+    done
+
+    if [ "$AUTH_PROXY_READY" = "true" ]; then
+      echo "✅ Auth proxy ready"
+    else
+      echo "❌ Auth proxy failed to start within 15s"
+      echo "   ABORTING: Will not start OpenClaw without authentication"
+      echo "   Check PRIVY_APP_ID, PRIVY_VERIFICATION_KEY, and OPENCLAW_OWNER_PRIVY_ID"
+      exit 1
+    fi
+  else
+    echo "❌ Auth proxy script not found at $AUTH_PROXY_SCRIPT"
+    echo "   ABORTING: Will not start OpenClaw without authentication"
+    echo "   Rebuild the Docker image with the auth proxy included"
+    exit 1
+  fi
+else
+  if [ -n "${PRIVY_APP_ID:-}" ] || [ -n "${PRIVY_VERIFICATION_KEY:-}" ] || [ -n "${OPENCLAW_OWNER_PRIVY_ID:-}" ]; then
+    echo "⚠️  Partial Privy configuration detected — all three required:"
+    echo "   PRIVY_APP_ID, PRIVY_VERIFICATION_KEY, OPENCLAW_OWNER_PRIVY_ID"
+    echo "   Starting without auth proxy (legacy mode)"
+  fi
+fi
+
 # ─── Start OpenClaw Gateway ─────────────────────────────────────────────────
 
-node /app/openclaw.mjs gateway --allow-unconfigured --bind lan &
+if [ "$AUTH_PROXY_ENABLED" = "true" ]; then
+  # In auth proxy mode, bind to localhost only (config sets gateway.bind=loopback)
+  # Auth proxy on :18789 is the sole external entry point
+  node /app/openclaw.mjs gateway --allow-unconfigured &
+else
+  node /app/openclaw.mjs gateway --allow-unconfigured --bind lan &
+fi
 GATEWAY_PID=$!
 
 # ─── Health Gate: Wait for gateway readiness ─────────────────────────────────
 
-echo "⏳ Waiting for gateway..."
+echo "⏳ Waiting for gateway on port ${GATEWAY_PORT}..."
 HEALTH_ATTEMPTS=0
 MAX_ATTEMPTS=60
 GATEWAY_ALIVE=true
 GATEWAY_HEALTHY=false
 
 while [ $HEALTH_ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-  if curl -sf http://127.0.0.1:18789/health > /dev/null 2>&1; then
+  if curl -sf http://127.0.0.1:${GATEWAY_PORT}/health > /dev/null 2>&1; then
     GATEWAY_HEALTHY=true
     break
   fi
@@ -531,33 +649,50 @@ done
 
 if [ "$GATEWAY_HEALTHY" = "true" ]; then
   echo ""
-  echo "╔══════════════════════════════════════════════════════════════════╗"
-  echo "║  ✅ EverClaw is ready!                                          ║"
-  echo "║                                                                 ║"
-  echo "║  Dashboard:  ${DASHBOARD_URL}"
-  echo "║  Proxy:      http://localhost:${EVERCLAW_PROXY_PORT:-8083}/v1"
-  echo "║                                                                 ║"
-  echo "║  Auth token: ${AUTH_TOKEN}"
-  echo "║  Token from: ${TOKEN_SOURCE}"
-  echo "╚══════════════════════════════════════════════════════════════════╝"
-  echo ""
-  echo "💡 Bookmark the Dashboard URL — it includes your auth token."
-  echo ""
+  if [ "$AUTH_PROXY_ENABLED" = "true" ]; then
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║  ✅ EverClaw is ready! (Privy auth enabled)                     ║"
+    echo "║                                                                 ║"
+    echo "║  Dashboard:  Visit your container URL                          ║"
+    echo "║  Auth:       Privy social login (Google, email, Apple)          ║"
+    echo "║  Inference:  http://localhost:${EVERCLAW_PROXY_PORT:-8083}/v1"
+    echo "║                                                                 ║"
+    echo "║  Owner: ${OPENCLAW_OWNER_PRIVY_ID}"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "🔒 Only the authenticated owner can access this agent."
+    echo "   No credentials are stored externally — fully sovereign."
+    echo ""
+  else
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║  ✅ EverClaw is ready!                                          ║"
+    echo "║                                                                 ║"
+    echo "║  Dashboard:  ${DASHBOARD_URL}"
+    echo "║  Proxy:      http://localhost:${EVERCLAW_PROXY_PORT:-8083}/v1"
+    echo "║                                                                 ║"
+    echo "║  Auth token: ${AUTH_TOKEN}"
+    echo "║  Token from: ${TOKEN_SOURCE}"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "💡 Bookmark the Dashboard URL — it includes your auth token."
+    echo ""
+  fi
 
   # First-run security guidance banner (shown once, suppressed by sentinel file)
-  if [ ! -f "$FIRST_RUN_MARKER" ]; then
-    GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
+  # Suppress in auth proxy mode — the proxy IS the authentication layer
+  if [ ! -f "$FIRST_RUN_MARKER" ] && [ "$AUTH_PROXY_ENABLED" != "true" ]; then
+    BANNER_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
     cat <<EOF
 ╔══════════════════════════════════════════════════════════════════╗
 ║  🔒 Security: Best Practices                                    ║
 ║                                                                 ║
-║  For best security, access via http://localhost:${GATEWAY_PORT}
-║  LAN access (e.g. http://192.168.x.x:${GATEWAY_PORT}) works but
+║  For best security, access via http://localhost:${BANNER_PORT}
+║  LAN access (e.g. http://192.168.x.x:${BANNER_PORT}) works but
 ║  is less secure — device auth requires HTTPS or localhost.
 ║                                                                 ║
 ║  For remote access, set up an HTTPS reverse proxy:              ║
 ║    • Caddy, Traefik, or Nginx with Let's Encrypt               ║
-║    • SSH tunnel: ssh -NL ${GATEWAY_PORT}:127.0.0.1:${GATEWAY_PORT} user@host
+║    • SSH tunnel: ssh -NL ${BANNER_PORT}:127.0.0.1:${BANNER_PORT} user@host
 ║                                                                 ║
 ║  Docs: https://docs.openclaw.ai/gateway/security               ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -566,9 +701,12 @@ EOF
       echo "⚠️  Could not create first-run marker — this banner may reappear" >&2
     fi
   fi
-  echo "⚠️  Do not expose to the internet without additional authentication"
-  echo "   (reverse proxy, VPN, etc)."
-  echo ""
+
+  if [ "$AUTH_PROXY_ENABLED" != "true" ]; then
+    echo "⚠️  Do not expose to the internet without additional authentication"
+    echo "   (reverse proxy, VPN, etc)."
+    echo ""
+  fi
 elif [ "$GATEWAY_ALIVE" = "false" ]; then
   echo ""
   echo "╔══════════════════════════════════════════════════════════════════╗"

@@ -86,6 +86,32 @@ RUN rm -rf ./src ./extensions && \
     NODE_ENV=production node ./scripts/postinstall-bundled-plugins.mjs && \
     npm cache clean --force
 
+# ─── Stage 1.5: Build Auth Proxy ────────────────────────────────────────────
+
+# Auth proxy for Privy JWT authentication
+# Built at image time — bundles Privy SDK + React (no runtime CDN dependency)
+FROM node:22-bookworm-slim AS auth-proxy-builder
+
+WORKDIR /auth-proxy
+
+# Copy auth proxy files from the build context
+COPY packages/core/auth-proxy/package.json packages/core/auth-proxy/package-lock.json* ./
+COPY packages/core/auth-proxy/server.mjs ./
+COPY packages/core/auth-proxy/login.html ./
+COPY packages/core/auth-proxy/login-app.jsx ./
+COPY packages/core/auth-proxy/build-login.mjs ./
+
+# Install ALL dependencies (including devDependencies for build step)
+# Use npm ci if lockfile exists, fall back to npm install for first build
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+# Bundle Privy SDK + React into a single JS file (eliminates CDN dependency)
+RUN npm run build
+
+# Remove devDependencies after build (keep only production deps in final image)
+RUN rm -rf node_modules && \
+    if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+
 # ─── Stage 2: Production Image ───────────────────────────────────────────────
 
 FROM node:22-bookworm-slim AS production
@@ -112,6 +138,10 @@ RUN mkdir -p /home/node/.openclaw/workspace/skills/everclaw \
     && touch /home/node/.morpheus/.cookie \
     && touch /home/node/.morpheus/sessions.json \
     && chown -R node:node /home/node
+
+# ─── Copy Auth Proxy ───────────────────────────────────────────────────────
+# Auth proxy for Privy JWT authentication (runs on :18789, proxies to :18790)
+COPY --from=auth-proxy-builder --chown=node:node /auth-proxy /opt/everclaw/auth-proxy
 
 WORKDIR /app
 
