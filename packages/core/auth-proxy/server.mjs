@@ -67,6 +67,10 @@ const CONFIG = {
   verifyOwnerUrl: process.env.VERIFY_OWNER_URL || '',
   verifyOwnerSecret: process.env.VERIFY_OWNER_SECRET || '',
   containerFqdn: process.env.CONTAINER_FQDN || '',
+  // Login-page branding (set by provisioner; lobster is the OpenClaw default)
+  brandName: process.env.BRAND_NAME || 'OpenClaw',
+  brandIcon: process.env.BRAND_ICON || '🦞',
+  brandTagline: process.env.BRAND_TAGLINE || 'Your sovereign AI agent',
 };
 
 // Dynamic ownership mode: when VERIFY_OWNER_URL is set, ownership is checked
@@ -342,6 +346,16 @@ async function verifyPrivyJwt(token, reqHost) {
 
 // ─── Login Page ─────────────────────────────────────────────────────────────
 
+// Escape HTML special chars for safe interpolation of env-sourced branding.
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 let loginPageHtml = null;
 let loginBundleJs = null;
 
@@ -353,6 +367,9 @@ async function loadLoginPage() {
     // Inject configuration values at serve time
     html = html.replace(/__PRIVY_APP_ID__/g, CONFIG.privyAppId);
     html = html.replace(/__PRIVY_CLIENT_ID__/g, CONFIG.privyClientId);
+    html = html.replace(/__BRAND_ICON__/g, escapeHtml(CONFIG.brandIcon));
+    html = html.replace(/__BRAND_NAME__/g, escapeHtml(CONFIG.brandName));
+    html = html.replace(/__BRAND_TAGLINE__/g, escapeHtml(CONFIG.brandTagline));
 
     loginPageHtml = html;
     console.log('✅ Login page loaded');
