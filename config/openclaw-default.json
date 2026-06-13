@@ -22,6 +22,7 @@
         "models": [
           { "id": "glm-5.1", "name": "GLM-5.1 (Morpheus Gateway)", "reasoning": false },
           { "id": "glm-5", "name": "GLM-5 (Morpheus Gateway)", "reasoning": false },
+          { "id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash (Morpheus Gateway)", "reasoning": false },
           { "id": "glm-4.7-flash", "name": "GLM 4.7 Flash (Morpheus Gateway)", "reasoning": false },
           { "id": "kimi-k2.5", "name": "Kimi K2.5 (Morpheus Gateway)", "reasoning": false }
         ]
@@ -53,6 +54,7 @@
       "models": {
         "mor-gateway/glm-5.1": { "streaming": true },
         "mor-gateway/glm-5": { "streaming": true },
+        "mor-gateway/deepseek-v4-flash": { "streaming": true },
         "mor-gateway/kimi-k2.5": { "streaming": true },
         "mor-gateway/glm-4.7-flash": { "streaming": true },
         "morpheus-local/glm-5.1": { "streaming": true },

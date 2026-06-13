@@ -438,6 +438,35 @@ if jq . "$CONFIG_FILE" > /dev/null 2>&1; then
   fi
 fi
 
+# ─── Per-Tier Default Model Override ─────────────────────────────────────────
+# When EVERCLAW_DEFAULT_MODEL is explicitly set (e.g., by provision-buffer for
+# free-tier containers), override the primary model in openclaw.json.
+# This ensures free-tier containers use deepseek-v4-flash (which CIG allows)
+# instead of glm-5.1 (which gets 403'd for free tier).
+
+if [ -n "${EVERCLAW_DEFAULT_MODEL:-}" ] && jq . "$CONFIG_FILE" > /dev/null 2>&1; then
+  DESIRED_PRIMARY="mor-gateway/${EVERCLAW_DEFAULT_MODEL}"
+  CURRENT_PRIMARY=$(jq -r '.agents.defaults.model.primary // empty' "$CONFIG_FILE" 2>/dev/null)
+  if [ "$CURRENT_PRIMARY" != "$DESIRED_PRIMARY" ]; then
+    TMP_CONFIG=$(mktemp)
+    if jq --arg new "$DESIRED_PRIMARY" --arg old "$CURRENT_PRIMARY" '
+      # Ensure agents.defaults.model structure exists
+      .agents.defaults.model.fallbacks //= [] |
+      # Move old primary to front of fallbacks (skip if empty/null)
+      .agents.defaults.model.fallbacks = (
+        [if ($old | length) > 0 then $old else empty end] +
+        [.agents.defaults.model.fallbacks[] | select(. != null and . != "" and . != $old and . != $new)]
+      ) |
+      .agents.defaults.model.primary = $new
+    ' "$CONFIG_FILE" > "$TMP_CONFIG" 2>/dev/null; then
+      mv "$TMP_CONFIG" "$CONFIG_FILE"
+      echo "🔄 Default model override: ${CURRENT_PRIMARY} → ${DESIRED_PRIMARY} (EVERCLAW_DEFAULT_MODEL)"
+    else
+      rm -f "$TMP_CONFIG"
+    fi
+  fi
+fi
+
 # ─── Security Tier: Apply exec approval settings ────────────────────────────
 # Reads EVERCLAW_SECURITY_TIER env var (default: recommended).
 # Writes tools.exec.ask + safeBins + strictInlineEval into openclaw.json.
