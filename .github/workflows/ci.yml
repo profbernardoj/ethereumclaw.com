@@ -1,0 +1,145 @@
+name: Morpheus Skill CI/CD Pipeline
+
+# NOTE: This workflow runs in both monorepo (packages/core/*) and composed
+# flavor repos (root-level). Use $SCRIPTS_DIR / $DOCKERFILE env vars set by
+# the "Detect repo structure" step. Do not hardcode packages/core/ paths.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  syntax-check:
+    name: Syntax & Shell Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect repo structure
+        id: detect
+        run: |
+          if [ -d "packages/core/scripts" ]; then
+            echo "SCRIPTS_DIR=packages/core/scripts" >> $GITHUB_OUTPUT
+          else
+            echo "SCRIPTS_DIR=scripts" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Node syntax check
+        run: node --check ${{ steps.detect.outputs.SCRIPTS_DIR }}/*.mjs
+
+      - name: Shell syntax check
+        run: bash -n ${{ steps.detect.outputs.SCRIPTS_DIR }}/*.sh
+
+  unit-tests:
+    name: Wallet Tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect repo structure
+        id: detect
+        run: |
+          if [ -d "packages/core/scripts" ]; then
+            echo "SCRIPTS_DIR=packages/core/scripts" >> $GITHUB_OUTPUT
+          else
+            echo "SCRIPTS_DIR=scripts" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run wallet test suite
+        run: node --test ${{ steps.detect.outputs.SCRIPTS_DIR }}/everclaw-wallet.test.mjs
+        env:
+          EVERCLAW_YES: "1"
+
+  proxy-tests:
+    name: Proxy Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect repo structure
+        id: detect
+        run: |
+          if [ -d "packages/core/scripts" ]; then
+            echo "SCRIPTS_DIR=packages/core/scripts" >> $GITHUB_OUTPUT
+          else
+            echo "SCRIPTS_DIR=scripts" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run proxy test suite
+        run: node --test ${{ steps.detect.outputs.SCRIPTS_DIR }}/morpheus-proxy.test.mjs
+
+  security-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gitleaks (CLI)
+        run: |
+          wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          tar -xzf gitleaks_8.21.2_linux_x64.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Scan for secrets
+        run: gitleaks detect --source . --verbose --no-git
+
+  # Docker build only runs on monorepo (EverClaw/EverClaw).
+  # Composed flavor repos don't have packages/core/ or flavors/ directories
+  # that the Dockerfile requires.
+  docker-smoke:
+    name: Docker Build Smoke Test
+    runs-on: ubuntu-latest
+    if: github.repository == 'EverClaw/EverClaw'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect repo structure
+        id: detect
+        run: |
+          if [ -d "packages/core/scripts" ]; then
+            echo "DOCKERFILE=packages/core/Dockerfile" >> $GITHUB_OUTPUT
+          else
+            echo "DOCKERFILE=Dockerfile" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image
+        run: docker build -f ${{ steps.detect.outputs.DOCKERFILE }} -t everclaw-test .
+        env:
+          DOCKER_BUILDKIT: "1"
+
+      - name: Basic container smoke test
+        run: docker run --rm everclaw-test node --check /home/node/.openclaw/workspace/skills/everclaw/scripts/setup.mjs
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true

@@ -1,0 +1,23 @@
+# Gitleaks allowlist for EverClaw CI
+# These are all public values, example keys, or test fixtures
+
+[allowlist]
+description = "Allowlist for EverClaw CI - public contract addresses, example keys, test fixtures"
+paths = [
+  '''\.test\.mjs$''',
+  '''docs/''',
+  '''examples/''',
+  '''references/''',
+  '''skills/prompt-guard/tests/''',
+  '''skills/bagman/examples/'''
+]
+regexes = [
+  '''0x[a-fA-F0-9]{40}''',
+  '''0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80''',
+  '''c2staWR0TVBJLmJlZTA0NjU3ZmNlOTBlYjk3MWQ0ZTJjMmMzYWFhZmJkZGI2NGY5YmZhMWY5NGVkMDJiMmIxOGNhNGEwMTQxZDA=''',
+  '''YOUR_API_KEY|YOUR_MOR_GATEWAY_API_KEY|morpheus-local|sk_test_[a-zA-Z0-9]+''',
+  '''eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+''',
+  '''test-strong-key-[a-zA-Z0-9]+|ghp_[A-Z]{30,}|xoxb-[0-9]+-[a-zA-Z0-9]+''',
+  '''sk_test_1234567890''',
+  '''Authorization:\s*Bearer\s+(morpheus-local|YOUR_API_KEY)'''
+]
