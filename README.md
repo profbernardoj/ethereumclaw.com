@@ -1,22 +1,39 @@
-# Morpheus Skill (Canonical)
+# Ethereum Claw
 
-> The canonical Morpheus decentralized AI agent skill for OpenClaw
+> AI agent for Ethereum ecosystem
 
 ## Overview
 
-This is the default/canonical flavor of the EverClaw ecosystem. It provides the full Morpheus infrastructure without domain-specific customization.
+Ethereum Claw is a flavor of the [EverClaw](https://everclaw.xyz) decentralized AI agent ecosystem, powered by Morpheus Network inference.
 
-**Domain:** morpheusclaw.com  
+**Domain:** ethereumclaw.com  
 **Default Model:** GLM-5 (via Morpheus decentralized inference)
 
-## This Is The Source
+## What This Flavor Does
 
-The `morpheus-skill` repo is the monorepo that contains:
-- `packages/core/` — All shared Morpheus infrastructure
-- `flavors/` — Per-flavor configs and persona files
-- `scripts/` — Ecosystem management scripts
+This flavor provides the common Morpheus infrastructure (wallet, proxy, session management, security) with a persona and configuration tailored for: AI agent for Ethereum ecosystem.
 
-All other flavor repos are composed from `packages/core/` + their specific `flavors/<name>/` directory.
+## Installation
+
+```bash
+curl -sSL https://ethereumclaw.com/install.sh | bash
+```
+
+Or clone and set up manually:
+
+```bash
+git clone https://github.com/profbernardoj/ethereumclaw.com.git
+cd ethereumclaw.com
+npm install
+node scripts/setup.mjs
+```
+
+## Part of EverClaw
+
+This repo is one of 28+ flavor repos in the EverClaw ecosystem. Each flavor shares the same core Morpheus infrastructure but with a unique identity and focus.
+
+- **Core Infrastructure:** Morpheus proxy, session management, wallet, security tiers
+- **Unique to this flavor:** Persona, default workflows, and domain-specific configuration
 
 ## License
 
